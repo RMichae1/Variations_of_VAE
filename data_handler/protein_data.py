@@ -500,9 +500,8 @@ def seqs_collate(tensors):
 
 
 def get_protein_dataloader(dataset, batch_size = 128, shuffle = False, get_seqs = False, random_weighted_sampling = False):
-    #sampler = WeightedRandomSampler(weights = dataset.weights, num_samples = len(dataset.weights), replacement = True) if random_weighted_sampling else None
-    #return DataLoader(dataset, batch_size = batch_size, shuffle = shuffle if not random_weighted_sampling else not random_weighted_sampling, collate_fn = seqs_collate, sampler = sampler)
-    return DataLoader(dataset, batch_size = batch_size, shuffle = shuffle, collate_fn = seqs_collate)
+    sampler = WeightedRandomSampler(weights = dataset.weights, num_samples = len(dataset.weights), replacement = True) if random_weighted_sampling else None
+    return DataLoader(dataset, batch_size = batch_size, shuffle = shuffle if not random_weighted_sampling else not random_weighted_sampling, collate_fn = seqs_collate, sampler = sampler)
 
 
 # ensure that alignments used have an amino acid more than a threshold percentage to ensure we dont have too gappy alignments included
