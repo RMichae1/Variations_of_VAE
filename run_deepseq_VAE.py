@@ -110,18 +110,23 @@ print(model)
 date = 'D'+str(datetime.datetime.now().year)+str(datetime.datetime.now().month)+str(datetime.datetime.now().day)
 time = 'T'+str(datetime.datetime.now().hour)+str(datetime.datetime.now().minute)
 date_time = date+time
-bestMSE_model_save_name = date_time+name+'_'+str(latent_dim)+'dim_bestMSE_VAE.torch'
-train_indices, val_indices, test_indices = positional_splitter(assay_df, query_seqs, val=True, offset = offset, pos_per_fold = pos_per_fold, 
-                                            split_by_DI = split_by_DI)
+
+# train_indices, val_indices, test_indices = positional_splitter(assay_df, query_seqs, val=True, offset = 4, pos_per_fold = pos_per_fold, 
+#                                             split_by_DI = False)
 
 results_dict = defaultdict(list)
 best_downstream_loss = np.inf
 overall_start_time = datetime.datetime.now()
+
+VALIDATION_EPSILON = 10e-3 # convergence rate of validation
+validation_errors = [100000000] # initial error very high, mitigates early indexing issues
+overfitting_patience = 10 # validation intervals
+
 for epoch in range(1, epochs + 1):
     if torch.cuda.is_available():
         model = model.cuda().float()
     start_time = datetime.datetime.now()
-    train_loss, train_metrics, px_z = train_epoch(epoch = epoch, model = model, optimizer = optimizer, scheduler=None, train_loader = train_loader)
+    train_loss, train_metrics, px_z, aux_loss = train_epoch(epoch = epoch, model = model, optimizer = optimizer, scheduler=None, train_loader = train_loader)
 
     loss_str = "Training"
     loss_value_str = f"{train_loss:.5f}"
@@ -132,47 +137,31 @@ for epoch in range(1, epochs + 1):
     results_dict['kld_loss_train'].append(train_metrics["kld_loss"])
     results_dict['param_kld_train'].append(train_metrics["param_kld"])
     results_dict['total_train_loss'].append(train_loss)
+    results_dict['aux_loss'].append(aux_loss)
 
     # print status
-    print(f"Summary epoch: {epoch} Train loss: {train_loss:.5f} Recon loss: {train_metrics['nll_loss']:.5f} KLdiv loss: {train_metrics['kld_loss']:.5f} Param loss: {train_metrics['param_kld']:.5f} {val_str}Time: {datetime.datetime.now() - start_time}", end="\n\n")
+    print(f"Summary epoch: {epoch} Train loss: {train_loss:.5f} Recon loss: {train_metrics['nll_loss']:.5f} KLdiv loss: {train_metrics['kld_loss']:.5f} Auxiliary loss: {aux_loss} Param loss: {train_metrics['param_kld']:.5f} {val_str}Time: {datetime.datetime.now() - start_time}", end="\n\n")
     if epoch in log_interval:
-        with torch.no_grad():
-            # encode data
-            mu_tmp = []
-            for i, batch in enumerate(np.array_split(X_labelled_torch, math.ceil(len(X_labelled_torch)/1000))):
-                mu, var = model.cpu().encoder(batch, labels)
-                mu = mu.detach().numpy()
-                mu_tmp.append(mu)
-            mu = np.vstack(mu_tmp)
-            # append
-            
-            output_bio = pred_func(mu, y, train_indices, val_indices, seed=42)
-            results_dict['downstream_MSE_list'].append(output_bio[0])
-            results_dict['downstream_MSE_std_list'].append(output_bio[1])
+        model.eval()
+        val_loss, _, _, val_aux_loss = train_epoch(epoch = epoch, model = model, 
+                                    optimizer = optimizer, scheduler=None, train_loader = val_loader)
+        val_diff = np.abs(validation_errors[-1]-val_loss)
+        print(f"Validation step: {epoch} - loss: {val_loss}, abs.diff={val_diff}, val_aux_loss: {val_aux_loss}")
+        # TODO: setup torch saving of model weights during validation
+        if val_diff <= VALIDATION_EPSILON or overfitting_patience == 0:
+          print(f"ENDING TRAINING!")
+          if val_diff <= VALIDATION_EPSILON:
+            print("Validation delta reached...")
+          if overfitting_patience == 0:
+            print("overfitted after 5 validation steps")
+          break
+        if val_loss > validation_errors[-1]:
+          print("Overfitted step... ")
+          overfitting_patience -= 1
+        validation_errors.append(val_loss)
+        model.train()
 
-            improved_MSE = best_downstream_loss > np.mean(output_bio[0])
-            if improved_MSE:
-                best_downstream_loss = np.mean(output_bio[0])
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'loss': train_loss,
-                    }, bestMSE_model_save_name)
-
-                output_test = pred_func(mu, y, [np.hstack([t,v]) for t,v in zip(train_indices,val_indices)], test_indices, seed=42)
-                results_dict['downstream_testmse_list'].append(output_test[0])
-                print(output_test[0], output_test[1])
-                mu_all_tmp = []
-                for i, batch in enumerate(np.array_split(X_all_torch, math.ceil(len(X_all_torch)/1000))):
-                    mu_all, _ = model.cpu().encoder(batch, labels)
-                    mu_all = mu_all.detach().numpy()
-                    mu_all_tmp.append(mu_all)
-                mu_all = np.vstack(mu_all_tmp)
-                results_dict['encoded_mu'].append(mu_all)
-
-
-        print('total epoch time', datetime.datetime.now()-start_time)
+print('total epoch time', datetime.datetime.now()-start_time)
         
 with torch.no_grad():
     print('Saving...')
