@@ -895,22 +895,17 @@ def prep_ssl_data(ssl_deg=0, ssl_iniact=0, ssl_pnp=0, ssl_glad=0, discretize=Fal
 
 class ProteinDataset(Dataset):
     def __init__(self, data, device = None, SSVAE=False, SSCVAE=False, CVAE=False, regCVAE=False,
-                 assays_to_include=[], train_index=None, train_with_assay_seq=False,
-                 only_assay_seqs=False, training=True):
+                 train_with_assay_seq=False, only_assay_seqs=False, training=True):
         super().__init__()
         if len(data) == 0:
             self.encoded_seqs = torch.Tensor()
             self.weights = torch.Tensor()
             self.neff = 0
             return
-        if training:
-            actual_labels = data.dropna(subset=assays_to_include)
-            train_labelled_data = actual_labels.loc[train_index]
 
-        if 'blast' in data.columns and not train_with_assay_seq:
-            data = data.drop(data.index[data['blast'] != 1].tolist(), axis=0)
-        if 'blast' not in data.columns and training:
-            data = data.drop(actual_labels.index, axis=0)
+        if training:
+            actual_labels = data[~data.assay.isna()]
+            train_labelled_data = actual_labels
 
         if training:
             if SSVAE or CVAE or SSCVAE or regCVAE or train_with_assay_seq:
@@ -918,21 +913,12 @@ class ProteinDataset(Dataset):
 
         if only_assay_seqs:
             data = train_labelled_data
+
         self.encoded_seqs = torch.stack([torch.tensor(seq, device=device) for seq in data['seqs'].values]).long()
         num_sequences = self.encoded_seqs.size(0)
         self.labels = torch.Tensor()
 
         discretize = True if SSCVAE or CVAE else False
-
-        labels = prep_any_labels(data,
-                                 assays_to_include, SSCVAE=SSCVAE,
-                                 discretize=discretize, training=training)
-
-        for col in labels.columns:
-            if 'UNKNOWN' in col and SSCVAE:
-                labels = labels.drop(col, axis=1)
-                labels[labels.eq(0).all(axis=1)==True] = labels[labels.eq(0).all(axis=1)==True]*float('nan')
-        self.labels = torch.tensor(labels.values.astype(float), device=device).to(torch.float)
 
         if not SSVAE and not CVAE and not SSCVAE and not regCVAE:
             self.labels = None
@@ -966,35 +952,34 @@ class ProteinDataset(Dataset):
         return self.encoded_seqs[i], self.weights[i], self.neff, labels
 
 
-def get_datasets(data=None, train_ratio=0, device = None, SSVAE=False, SSCVAE=False, CVAE=False, regCVAE=False, assays_to_include=[], train_index=None, train_with_assay_seq=False, only_assay_seqs=False):
-    seqs = data['seqs']
-    data_len = len(seqs)
+def get_datasets(data=None, train_ratio=0, device = None, 
+                 SSVAE=False, SSCVAE=False, CVAE=False, regCVAE=False, 
+                 train_with_assay_seq=False, only_assay_seqs=False, 
+                 cluster_validation=False, cluster_file: str=None, cluster_order_file: str=None):
+    seqs = len(data['seqs'])
+    _msa_data = data[data.assay.isna()].copy()
+    if cluster_validation and cluster_file:
+        cluster_df = parse_alignment_clusters(cluster_file, order_alignment_file=cluster_order_file)
+        val_seqs_indices = sample_mmseq_clusters_validation_indices(cluster_df)
+        # drop val from training
+    else:
+        val_seqs_indices = _msa_data.sample(frac=0.1).index
+    
+    val_seqs = _msa_data.iloc[val_seqs_indices]
+    train_seqs = _msa_data.drop(np.unique(val_seqs_indices), axis=0)
+    print(f"Training data: {len(train_seqs)}")
+    # DEBUG
+    print(f"VAL: {len(val_seqs)}")
+    print(f"TRAIN: {len(train_seqs)}")
+    print(f"MSA: {train_seqs.head()}")
 
-    # Split into train/validation
-    train_length = int(train_ratio * data_len)
-    val_length = data_len - train_length
-
-    if 'blast' in data.columns and train_ratio < 1:
-        val_blast_index = data.drop(data.index[data['blast'] != 1].tolist(), axis=0).sample(frac=(1-train_ratio), replace=False, random_state=42).index
-        train_blast_index = [idx for idx in data.drop(data.index[data['blast'] != 1].tolist(), axis=0).index if idx not in val_blast_index]
-        val_seqs = data.drop(data.index[data['blast'] != 1].tolist(), axis=0).drop(train_blast_index, axis=0)
-        train_seqs = data.drop(data.index[data['blast'] != 1].tolist(), axis=0).drop(val_blast_index, axis=0)
-        labelled_data = data.dropna(subset=assays_to_include)
-        train_seqs = pd.concat((train_seqs, labelled_data))
-    if train_ratio == 1:
-        train_seqs = data
-        val_seqs = []
-    if 'blast' not in data.columns and train_ratio < 1:
-        labelled_data = data.dropna(subset=assays_to_include)
-        val_blast_index = data.drop(labelled_data.index, axis=0).sample(frac=(1-train_ratio), replace=False, random_state=42).index
-        train_blast_index = [idx for idx in data.drop(labelled_data.index, axis=0).index if idx not in val_blast_index]
-        val_seqs = data.drop(labelled_data.index, axis=0).drop(train_blast_index, axis=0)
-        train_seqs = data.drop(labelled_data.index, axis=0).drop(val_blast_index, axis=0)
-        train_seqs = pd.concat((train_seqs, labelled_data))
-    all_data = ProteinDataset(data, device = device, SSVAE=SSVAE, SSCVAE=SSCVAE, CVAE=CVAE, regCVAE=regCVAE, assays_to_include=assays_to_include, train_index=train_index, train_with_assay_seq=train_with_assay_seq, only_assay_seqs=only_assay_seqs)
-    train_data = ProteinDataset(train_seqs, device = device, SSVAE=SSVAE, SSCVAE=SSCVAE, CVAE=CVAE, regCVAE=regCVAE, assays_to_include=assays_to_include, train_index=train_index, train_with_assay_seq=train_with_assay_seq, only_assay_seqs=only_assay_seqs)
-    keep_val_idx = train_blast_index = [idx for idx in data.dropna(subset=assays_to_include).index if idx not in train_index]
-    val_data = ProteinDataset(val_seqs, device = device, SSVAE=SSVAE, SSCVAE=SSCVAE, CVAE=CVAE, regCVAE=regCVAE, assays_to_include=assays_to_include, train_index=keep_val_idx, train_with_assay_seq=train_with_assay_seq, only_assay_seqs=only_assay_seqs, training=False)
+    all_data = ProteinDataset(data, device = device, SSVAE=SSVAE, SSCVAE=SSCVAE, CVAE=CVAE, regCVAE=regCVAE, 
+                              train_with_assay_seq=train_with_assay_seq, only_assay_seqs=only_assay_seqs)
+    train_data = ProteinDataset(train_seqs, device = device, SSVAE=SSVAE, SSCVAE=SSCVAE, CVAE=CVAE, regCVAE=regCVAE, 
+                                train_with_assay_seq=train_with_assay_seq, 
+                                only_assay_seqs=only_assay_seqs)
+    val_data = ProteinDataset(val_seqs, device = device, SSVAE=SSVAE, SSCVAE=SSCVAE, CVAE=CVAE, regCVAE=regCVAE,
+                              train_with_assay_seq=train_with_assay_seq, only_assay_seqs=only_assay_seqs, training=False)
     return all_data, train_data, val_data
 
 
