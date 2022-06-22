@@ -69,7 +69,7 @@ val_loader = get_protein_dataloader(val_data, batch_size = 100)
 print("Data loaded!")
 
 # log_interval
-log_interval = list(range(1, epochs, 3))
+log_interval = list(range(1, epochs, 5))
 
 # define input and output shape
 data_size = all_data[0][0].size(-1) * alphabet_size
@@ -86,11 +86,6 @@ model = VAE_bayes(
     use_sparse_interactions = use_sparse_interactions,
     rws=random_weighted_sampling,
     conditional_data_dim=0,
-    SSVAE = 0,
-    SSCVAE = 0,
-    CVAE=0,
-    VAE=1,
-    regCVAE=0,
     multilabel=0,
     seq2yalpha=seq2yalpha,
     z2yalpha=z2yalpha,
@@ -99,7 +94,8 @@ model = VAE_bayes(
     pred_from_seq=0,
     warm_up = 0,
     batchnorm=0,
-    device = device
+    device = device,
+    auxiliary_ELBO_loss=True
 )
 
 optimizer = optim.Adam(model.parameters())
