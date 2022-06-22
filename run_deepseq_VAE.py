@@ -18,32 +18,23 @@ import datetime
 device = 'cuda'
 
 # determine VAE
-epochs = 15
-offset = 4
+epochs = 150000
 latent_dim = 30
-name = 'ubqt'
+name = 'timb'
 extra = 'test'
-split_by_DI = False
-pos_per_fold = pos_per_fold_assigner(name.lower())
-if name == 'blat':
-    name = name.upper()
    
-df = pickle.load( open(name.lower()+'_data_df.pkl', "rb" ) )
-query_seqs = df['seqs'][0]
+df = data_df
+query_seqs = data_df.seqs[0].astype(np.int64) # data_df[data_df.mutant=="wt"]['seqs'].values[0]
 assay_df = df.dropna(subset=['assay']).reset_index(drop=True)
-y = assay_df['assay']
+y = assay_df['assay'].values[:, np.newaxis]
 
 random_weighted_sampling = True
 use_sparse_interactions = True
 use_bayesian = True
 use_param_loss = True
 batch_size = 100
-use_cluster='regular'
-assay_label = ['assay']
-labels = [None]
 
 assay_index = df.index
-train_idx = [i for i in df.index if i not in assay_index.values]
 all_data, train_data, val_data = get_datasets(data=df,
                                               train_ratio=1,
                                               device = device,
@@ -51,10 +42,9 @@ all_data, train_data, val_data = get_datasets(data=df,
                                               SSCVAE=0,
                                               CVAE=0,
                                               regCVAE=0,
-                                              assays_to_include=['assay'],
-                                              train_index=train_idx,
-                                              train_with_assay_seq=0,
-                                              only_assay_seqs=0)
+                                              train_with_assay_seq=False, 
+                                              only_assay_seqs=False,
+                                              cluster_validation=True,)
 
 # prep downstream data
 def onehot_(arr):
@@ -64,9 +54,12 @@ X_all_torch = torch.from_numpy(np.vstack(df['seqs'].values))
 X_labelled_torch = torch.from_numpy(np.vstack(assay_df['seqs'].values))
 
 # Construct dataloaders for batches
+print("Construct Training loader")
 train_loader = get_protein_dataloader(train_data, batch_size = batch_size, shuffle = False, random_weighted_sampling = random_weighted_sampling)
-val_loader = get_protein_dataloader(val_data, batch_size = 100)
+print("Construct Validation Loader")
+val_loader = get_protein_dataloader(val_data, batch_size = batch_size)
 print("Data loaded!")
+
 
 # log_interval
 log_interval = list(range(1, epochs, 5))
