@@ -25,7 +25,7 @@ def train_epoch(epoch, model, optimizer, scheduler, train_loader):
 
     for batch_idx, xb in enumerate(train_loader):
         batch_size = xb.size(0) if isinstance(xb, torch.Tensor) else xb[0].size(0)
-        loss, batch_metrics_dict, px_z = train_batch(model, optimizer, xb, scheduler)
+        loss, batch_metrics_dict, px_z, aux_loss = train_batch(model, optimizer, xb, scheduler)
 
         # Model saves loss types in dict calculate accumulated metrics
         semisup_metrics =  ["seq2y_loss",
@@ -33,7 +33,8 @@ def train_epoch(epoch, model, optimizer, scheduler, train_loader):
                             "labelled seqs",
                             "unlabelled seqs",
                             "unlabelled_loss",
-                            "labelled_loss"]
+                            "labelled_loss",
+                            "aux_loss"]
 
         for key, value in batch_metrics_dict.items():
             if key not in semisup_metrics:
@@ -59,10 +60,7 @@ def train_epoch(epoch, model, optimizer, scheduler, train_loader):
                 acc_metrics_dict[key] += 0
                 acc_metrics_dict[key + "_count"] += 1
 
-
-
         metrics_dict = {k: acc_metrics_dict[k] / acc_metrics_dict[k + "_count"] for k in acc_metrics_dict.keys() if not k.endswith("_count")}
-
         train_loss += loss.item() * batch_size
         train_count += batch_size
 
@@ -74,29 +72,22 @@ def train_epoch(epoch, model, optimizer, scheduler, train_loader):
     if scheduler is not None:
         metrics_dict['learning_rates'] = learning_rates
 
-    return average_loss, metrics_dict, px_z
+    return average_loss, metrics_dict, px_z, aux_loss
 
 def train_batch(model, optimizer, xb, scheduler = None):
     model.train()
-
     # Reset gradient for next batch
     optimizer.zero_grad()
     # Push whole batch of data through model.forward() account for protein_data_loader pushes more than tensor through
     if isinstance(xb, Tensor):
-        loss, batch_metrics_dict, px_z = model(xb)
+        loss, batch_metrics_dict, px_z, aux_loss = model(xb)
     else:
-        loss, batch_metrics_dict, px_z = model(*xb)
+        loss, batch_metrics_dict, px_z, aux_loss = model(*xb)
     # Calculate the gradient of the loss w.r.t. the graph leaves
     loss.backward()
     clip_grad_value = 200
     if clip_grad_value is not None:
         clip_grad_value_(model.parameters(), clip_grad_value)
-    # for n, p in model.named_parameters():
-    #     try:
-    #         if p.grad.norm().item() > 100:
-    #             print(n, p.grad.norm().item())
-    #     except AttributeError:
-    #         continue
     # Step in the direction of the gradient
     optimizer.step()
 
@@ -104,7 +95,7 @@ def train_batch(model, optimizer, xb, scheduler = None):
     if scheduler is not None:
         scheduler.step()
 
-    return loss, batch_metrics_dict, px_z
+    return loss, batch_metrics_dict, px_z, aux_loss
 
 def validate(epoch, model, validation_loader):
     model.eval()
